@@ -1,9 +1,15 @@
 package com.example.qrcodescanner
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
+import android.util.Size
 import android.view.ScaleGestureDetector
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -12,6 +18,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
 import androidx.camera.core.*
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.core.*
@@ -31,13 +39,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -130,13 +137,24 @@ fun QrScannerScreen(navController: NavController) {
 @OptIn(ExperimentalGetImage::class)
 @Composable
 fun QrScannerView(navController: NavController) {
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     
     var isFlashOn by remember { mutableStateOf(false) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var cameraInfo by remember { mutableStateOf<CameraInfo?>(null) }
     var isNavigating by remember { mutableStateOf(false) }
+
+    val vibrator = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+            vibratorManager.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+        }
+    }
 
     val barcodeScanner = remember {
         val options = BarcodeScannerOptions.Builder()
@@ -167,6 +185,12 @@ fun QrScannerView(navController: NavController) {
                 
                 previewView.setOnTouchListener { v, event ->
                     scaleGestureDetector.onTouchEvent(event)
+                    if (event.action == android.view.MotionEvent.ACTION_UP) {
+                        val factory = previewView.meteringPointFactory
+                        val point = factory.createPoint(event.x, event.y)
+                        val action = FocusMeteringAction.Builder(point).build()
+                        cameraControl?.startFocusAndMetering(action)
+                    }
                     v.performClick()
                     true
                 }
@@ -181,6 +205,16 @@ fun QrScannerView(navController: NavController) {
 
                     val imageAnalysis = ImageAnalysis.Builder()
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .setResolutionSelector(
+                            ResolutionSelector.Builder()
+                                .setResolutionStrategy(
+                                    ResolutionStrategy(
+                                        Size(1280, 720),
+                                        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                                    )
+                                )
+                                .build()
+                        )
                         .build()
 
                     imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -194,17 +228,30 @@ fun QrScannerView(navController: NavController) {
                                         val barcode = barcodes[0]
                                         barcode.displayValue?.let { text ->
                                             isNavigating = true
+                                            
+                                            // Haptic feedback with version check
+                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                                            } else {
+                                                @Suppress("DEPRECATION")
+                                                vibrator.vibrate(50)
+                                            }
+                                            
                                             navController.navigate(Result(text))
                                         }
                                         
-                                        // Auto-zoom logic: zoom in if the QR code is too small in the frame
+                                        // Optimized Auto-zoom logic: Gradually increase zoom instead of jumping
                                         barcode.boundingBox?.let { box ->
                                             val boxSize = maxOf(box.width(), box.height())
                                             val minDimension = minOf(image.width, image.height)
                                             
-                                            // If QR code occupies less than 25% of the frame, zoom in
-                                            if (boxSize < minDimension * 0.25) {
-                                                cameraControl?.setZoomRatio(2.5f)
+                                            if (boxSize < minDimension * 0.20) {
+                                                cameraInfo?.zoomState?.value?.let { zoomState ->
+                                                    val currentZoom = zoomState.zoomRatio
+                                                    if (currentZoom < 2.0f) {
+                                                        cameraControl?.setZoomRatio(currentZoom + 0.5f)
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -352,7 +399,7 @@ fun QrScannerOverlay() {
             drawRoundRect(
                 color = Color.Transparent,
                 topLeft = Offset(left, top),
-                size = Size(rectSize, rectSize),
+                size = ComposeSize(rectSize, rectSize),
                 cornerRadius = CornerRadius(24.dp.toPx()),
                 blendMode = BlendMode.Clear
             )
@@ -361,7 +408,7 @@ fun QrScannerOverlay() {
             drawRoundRect(
                 color = Color.White,
                 topLeft = Offset(left, top),
-                size = Size(rectSize, rectSize),
+                size = ComposeSize(rectSize, rectSize),
                 cornerRadius = CornerRadius(24.dp.toPx()),
                 style = Stroke(width = 3.dp.toPx())
             )
