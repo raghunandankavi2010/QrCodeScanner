@@ -217,11 +217,40 @@ fun QrScannerView(navController: NavController) {
                         )
                         .build()
 
+                    // Adaptive exposure state — captured by the analyzer closure.
+                    // The analyzer runs on a single-threaded executor, so these
+                    // vars don't need synchronization.
+                    var frameCounter = 0
+                    var lastEvIndex = 0
+
                     imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                         val mediaImage = imageProxy.image
                         if (mediaImage != null && !isNavigating) {
+                            // Re-evaluate exposure every ~10 frames (~300 ms at 30 fps).
+                            // Fixes washed-out scans in direct sunlight and boosts
+                            // dark scenes where the torch isn't on.
+                            frameCounter++
+                            if (frameCounter % 10 == 0) {
+                                val info = cameraInfo
+                                val ctrl = cameraControl
+                                if (info != null && ctrl != null &&
+                                    info.exposureState.isExposureCompensationSupported) {
+                                    val luminance = centerLuminance(imageProxy)
+                                    val range = info.exposureState.exposureCompensationRange
+                                    val newIndex = when {
+                                        luminance > 180.0 -> (lastEvIndex - 1).coerceAtLeast(range.lower)
+                                        luminance < 60.0  -> (lastEvIndex + 1).coerceAtMost(range.upper)
+                                        else -> lastEvIndex
+                                    }
+                                    if (newIndex != lastEvIndex) {
+                                        lastEvIndex = newIndex
+                                        ctrl.setExposureCompensationIndex(newIndex)
+                                    }
+                                }
+                            }
+
                             val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-                            
+
                             barcodeScanner.process(image)
                                 .addOnSuccessListener { barcodes ->
                                     if (barcodes.isNotEmpty() && !isNavigating) {
@@ -365,6 +394,45 @@ fun ResultScreen(text: String, navController: NavController) {
             }
         }
     }
+}
+
+/**
+ * Average luminance of the frame's center 50% region, computed from the Y plane
+ * of the YUV_420_888 image. Sampling every 16th row/column keeps this <1 ms even
+ * at 1080p. Returns 128.0 (neutral) if the buffer is unreadable.
+ *
+ * Used to drive exposure compensation so sunlight glare doesn't blow out the QR
+ * code's white modules and kill the contrast ML Kit depends on.
+ */
+private fun centerLuminance(imageProxy: ImageProxy): Double {
+    val plane = imageProxy.planes[0]
+    val buffer = plane.buffer.duplicate()
+    val rowStride = plane.rowStride
+    val width = imageProxy.width
+    val height = imageProxy.height
+
+    val rowStart = height / 4
+    val rowEnd = 3 * height / 4
+    val colStart = width / 4
+    val colEnd = 3 * width / 4
+
+    var sum = 0L
+    var count = 0
+    val step = 16
+    var r = rowStart
+    while (r < rowEnd) {
+        var c = colStart
+        while (c < colEnd) {
+            val idx = r * rowStride + c
+            if (idx < buffer.limit()) {
+                sum += (buffer.get(idx).toInt() and 0xFF)
+                count++
+            }
+            c += step
+        }
+        r += step
+    }
+    return if (count > 0) sum.toDouble() / count else 128.0
 }
 
 @Composable
