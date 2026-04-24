@@ -61,6 +61,7 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.serialization.Serializable
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @Serializable
 object Scanner
@@ -209,7 +210,7 @@ fun QrScannerView(navController: NavController) {
                             ResolutionSelector.Builder()
                                 .setResolutionStrategy(
                                     ResolutionStrategy(
-                                        Size(1280, 720),
+                                        Size(1920, 1080),
                                         ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                                     )
                                 )
@@ -217,34 +218,41 @@ fun QrScannerView(navController: NavController) {
                         )
                         .build()
 
-                    // Adaptive exposure state — captured by the analyzer closure.
-                    // The analyzer runs on a single-threaded executor, so these
-                    // vars don't need synchronization.
+                    // Single-threaded executor — no synchronization needed.
                     var frameCounter = 0
                     var lastEvIndex = 0
+                    var emptyFrameCount = 0
+                    var lastZoomAdjustFrame = -100
 
                     imageAnalysis.setAnalyzer(cameraExecutor) { imageProxy ->
                         val mediaImage = imageProxy.image
                         if (mediaImage != null && !isNavigating) {
-                            // Re-evaluate exposure every ~10 frames (~300 ms at 30 fps).
-                            // Fixes washed-out scans in direct sunlight and boosts
-                            // dark scenes where the torch isn't on.
                             frameCounter++
-                            if (frameCounter % 10 == 0) {
+
+                            // Proportional EV steps so direct sunlight gets corrected in ~150 ms, not ~2 s.
+                            if (frameCounter % 5 == 0) {
                                 val info = cameraInfo
                                 val ctrl = cameraControl
                                 if (info != null && ctrl != null &&
                                     info.exposureState.isExposureCompensationSupported) {
                                     val luminance = centerLuminance(imageProxy)
                                     val range = info.exposureState.exposureCompensationRange
-                                    val newIndex = when {
-                                        luminance > 180.0 -> (lastEvIndex - 1).coerceAtLeast(range.lower)
-                                        luminance < 60.0  -> (lastEvIndex + 1).coerceAtMost(range.upper)
-                                        else -> lastEvIndex
+                                    val delta = when {
+                                        luminance > 220.0 -> -3
+                                        luminance > 180.0 -> -2
+                                        luminance > 150.0 -> -1
+                                        luminance <  40.0 -> 3
+                                        luminance <  70.0 -> 2
+                                        luminance < 100.0 -> 1
+                                        else -> 0
                                     }
-                                    if (newIndex != lastEvIndex) {
-                                        lastEvIndex = newIndex
-                                        ctrl.setExposureCompensationIndex(newIndex)
+                                    if (delta != 0) {
+                                        val newIndex = (lastEvIndex + delta)
+                                            .coerceIn(range.lower, range.upper)
+                                        if (newIndex != lastEvIndex) {
+                                            lastEvIndex = newIndex
+                                            ctrl.setExposureCompensationIndex(newIndex)
+                                        }
                                     }
                                 }
                             }
@@ -253,33 +261,35 @@ fun QrScannerView(navController: NavController) {
 
                             barcodeScanner.process(image)
                                 .addOnSuccessListener { barcodes ->
-                                    if (barcodes.isNotEmpty() && !isNavigating) {
-                                        val barcode = barcodes[0]
-                                        barcode.displayValue?.let { text ->
-                                            isNavigating = true
-                                            
-                                            // Haptic feedback with version check
-                                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
-                                            } else {
-                                                @Suppress("DEPRECATION")
-                                                vibrator.vibrate(50)
+                                    if (barcodes.isNotEmpty()) {
+                                        emptyFrameCount = 0
+                                        if (!isNavigating) {
+                                            barcodes[0].displayValue?.let { text ->
+                                                isNavigating = true
+
+                                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                                    vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+                                                } else {
+                                                    @Suppress("DEPRECATION")
+                                                    vibrator.vibrate(50)
+                                                }
+
+                                                navController.navigate(Result(text))
                                             }
-                                            
-                                            navController.navigate(Result(text))
                                         }
-                                        
-                                        // Optimized Auto-zoom logic: Gradually increase zoom instead of jumping
-                                        barcode.boundingBox?.let { box ->
-                                            val boxSize = maxOf(box.width(), box.height())
-                                            val minDimension = minOf(image.width, image.height)
-                                            
-                                            if (boxSize < minDimension * 0.20) {
-                                                cameraInfo?.zoomState?.value?.let { zoomState ->
-                                                    val currentZoom = zoomState.zoomRatio
-                                                    if (currentZoom < 2.0f) {
-                                                        cameraControl?.setZoomRatio(currentZoom + 0.5f)
-                                                    }
+                                    } else {
+                                        // After ~0.5 s of no decode, ramp zoom up 0.1x per 5 frames to 2.0x.
+                                        emptyFrameCount++
+                                        if (emptyFrameCount >= 15 &&
+                                            frameCounter - lastZoomAdjustFrame >= 5) {
+                                            val info = cameraInfo
+                                            val ctrl = cameraControl
+                                            if (info != null && ctrl != null) {
+                                                val currentZoom = info.zoomState.value?.zoomRatio ?: 1f
+                                                if (currentZoom < 2.0f) {
+                                                    val newZoom = (currentZoom + 0.1f).coerceAtMost(2.0f)
+                                                    ctrl.setZoomRatio(newZoom)
+                                                    lastZoomAdjustFrame = frameCounter
                                                 }
                                             }
                                         }
@@ -305,6 +315,19 @@ fun QrScannerView(navController: NavController) {
                         )
                         cameraControl = camera.cameraControl
                         cameraInfo = camera.cameraInfo
+
+                        // Center-weighted AF/AE/AWB — bright edges don't steal metering from the QR.
+                        val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+                        val centerPoint = factory.createPoint(0.5f, 0.5f)
+                        val action = FocusMeteringAction.Builder(
+                            centerPoint,
+                            FocusMeteringAction.FLAG_AF or
+                                FocusMeteringAction.FLAG_AE or
+                                FocusMeteringAction.FLAG_AWB
+                        )
+                            .setAutoCancelDuration(5, TimeUnit.SECONDS)
+                            .build()
+                        camera.cameraControl.startFocusAndMetering(action)
                     } catch (e: Exception) {
                         Log.e("QrScanner", "Use case binding failed", e)
                     }
