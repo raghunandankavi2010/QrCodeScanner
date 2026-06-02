@@ -2,7 +2,10 @@ package com.example.qrcodescanner
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import android.os.Build
 import android.os.Bundle
 import android.os.VibrationEffect
@@ -59,7 +62,9 @@ import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
+import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -368,6 +373,10 @@ fun QrScannerView(navController: NavController) {
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ResultScreen(text: String, navController: NavController) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var isGeneratingPdf by remember { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -410,6 +419,42 @@ fun ResultScreen(text: String, navController: NavController) {
             }
             Spacer(modifier = Modifier.height(24.dp))
             Button(
+                onClick = {
+                    if (isGeneratingPdf) return@Button
+                    isGeneratingPdf = true
+                    scope.launch {
+                        try {
+                            val file = generateScanPdf(context, text)
+                            sharePdf(context, file)
+                        } catch (e: Exception) {
+                            Log.e("ResultScreen", "PDF generation failed", e)
+                            Toast.makeText(
+                                context,
+                                "Could not create PDF: ${e.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            isGeneratingPdf = false
+                        }
+                    }
+                },
+                enabled = !isGeneratingPdf,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                if (isGeneratingPdf) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Generating PDF…")
+                } else {
+                    Text("Save / Share as PDF")
+                }
+            }
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
                 onClick = { navController.popBackStack() },
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -417,6 +462,21 @@ fun ResultScreen(text: String, navController: NavController) {
             }
         }
     }
+}
+
+/** Fires an ACTION_SEND chooser for [file] as a PDF, granting temporary read access. */
+private fun sharePdf(context: Context, file: File) {
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file
+    )
+    val shareIntent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/pdf"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(shareIntent, "Share QR scan PDF"))
 }
 
 /**

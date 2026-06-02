@@ -65,6 +65,11 @@ dependencies {
     // ML Kit Barcode Scanning
     implementation(libs.mlkit.barcode.scanning)
 
+    // PDF generation (iText 7) + QR generation (ZXing)
+    implementation(libs.itext7.core)
+    implementation(libs.zxing.core)
+    runtimeOnly(libs.slf4j.nop)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
