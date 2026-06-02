@@ -2,6 +2,7 @@ package com.example.qrcodescanner
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.util.Base64
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
@@ -33,4 +34,12 @@ fun generateQrBitmap(text: String, sizePx: Int = 600): Bitmap {
     return Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888).apply {
         setPixels(pixels, 0, width, 0, 0, width, height)
     }
+}
+
+/** Encodes the bitmap as a PNG `data:` URI so it can be embedded directly in HTML. */
+fun Bitmap.toPngDataUri(): String {
+    val stream = java.io.ByteArrayOutputStream()
+    compress(Bitmap.CompressFormat.PNG, 100, stream)
+    val base64 = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
+    return "data:image/png;base64,$base64"
 }

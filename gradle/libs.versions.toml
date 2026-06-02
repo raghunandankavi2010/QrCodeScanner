@@ -12,9 +12,7 @@ camerax = "1.4.0"
 mlkit-barcode-scanning = "17.3.0"
 kotlinxSerializationJson = "1.7.3"
 navigationCompose = "2.8.5"
-itext7 = "7.2.5"
 zxing = "3.5.3"
-slf4j = "2.0.13"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -46,10 +44,8 @@ androidx-camera-extensions = { group = "androidx.camera", name = "camera-extensi
 # ML Kit Barcode Scanning
 mlkit-barcode-scanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkit-barcode-scanning" }
 
-# PDF generation (iText 7) + QR generation (ZXing)
-itext7-core = { group = "com.itextpdf", name = "itext7-core", version.ref = "itext7" }
+# QR generation (ZXing). PDFs are produced via Android's built-in print framework (no library).
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
-slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

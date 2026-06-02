@@ -145,8 +145,10 @@ fun QrScannerScreen(navController: NavController) {
 fun QrScannerView(navController: NavController) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
-    
+
+    var isGeneratingReport by remember { mutableStateOf(false) }
     var isFlashOn by remember { mutableStateOf(false) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var cameraInfo by remember { mutableStateOf<CameraInfo?>(null) }
@@ -347,6 +349,46 @@ fun QrScannerView(navController: NavController) {
 
         // UI Controls Layer
         Box(modifier = Modifier.fillMaxSize()) {
+            // Sample diagnostic report (free, HTML -> PDF via Android's print framework)
+            Button(
+                onClick = {
+                    if (isGeneratingReport) return@Button
+                    isGeneratingReport = true
+                    scope.launch {
+                        try {
+                            val file = generateDiagnosticReportPdf(context)
+                            sharePdf(context, file)
+                        } catch (e: Exception) {
+                            Log.e("QrScanner", "Report generation failed", e)
+                            Toast.makeText(
+                                context,
+                                "Could not create report: ${e.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } finally {
+                            isGeneratingReport = false
+                        }
+                    }
+                },
+                enabled = !isGeneratingReport,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(16.dp)
+            ) {
+                if (isGeneratingReport) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Generating…")
+                } else {
+                    Text("Sample Report PDF")
+                }
+            }
+
             // Flashlight Toggle
             IconButton(
                 onClick = {
